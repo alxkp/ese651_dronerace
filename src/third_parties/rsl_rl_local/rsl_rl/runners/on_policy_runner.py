@@ -40,6 +40,9 @@ class OnPolicyRunner:
             obs_dict = obs_data
 
         # Extract main observation
+        # breakpoint()
+        obs_dict = obs_dict[1]['observations']
+
         if "policy" in obs_dict:
             obs = obs_dict["policy"]
         elif "obs" in obs_dict:
@@ -134,6 +137,7 @@ class OnPolicyRunner:
             obs_dict = obs_data
 
         # Extract main observation
+        obs_dict = obs_dict[1]['observations']
         if "policy" in obs_dict:
             obs = obs_dict["policy"]
         elif "obs" in obs_dict:
@@ -172,6 +176,10 @@ class OnPolicyRunner:
                         obs_dict = dict(obs_data)
                     else:
                         obs_dict = obs_data
+
+                    # HACK: fix for format
+                    # breakpoint()
+                    obs_dict = {'policy': obs_dict}
 
                     if "policy" in obs_dict:
                         obs = obs_dict["policy"]

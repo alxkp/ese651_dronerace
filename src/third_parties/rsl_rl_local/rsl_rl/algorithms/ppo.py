@@ -14,6 +14,7 @@ from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
 
 
+import pdb # for debugging
 
 class PPO:
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
@@ -161,39 +162,46 @@ class PPO:
             # self.use_clipped_value_loss = use_clipped_value_loss
 
             # Implement the PPO update step
+            self.actor_critic.update_distribution(observations)
 
             # value loss
             estimated_values = self.actor_critic.evaluate(critic_observations)
             value_loss = 0.5 * ((estimated_values - value_targets)**2)
 
             # bookeeping
-            mean_value_loss += value_loss.item()
+            mean_value_loss += value_loss.mean().item()
 
 
             # surrogate loss term 1
-            ratio = torch.exp(self.actor_critic.get_actions_log_prob(sampled_actions) - prev_log_probs)
+            # pdb.set_trace()
+            
+
+            # self.actor_critic.distribution.loc 
+            curr_log_probs = self.actor_critic.get_actions_log_prob(sampled_actions).unsqueeze(-1)
+            ratio = torch.exp(curr_log_probs - prev_log_probs)
             surrogate_loss_1 = ratio * advantage_estimates
             
 
             # surrogate loss term 2
             # 1+epsilon A if A > 0, 1-epsilon A if A < 0
             # a>0 mask
-            g_func = torch.where(advantage_estimates > 0, 1 + self.clip_param, 1 - self.clip_param) * advantage_estimates
-            
+            # g_func = torch.where(advantage_estimates > 0, 1 + self.clip_param, 1 - self.clip_param) * advantage_estimates
+            g_func = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantage_estimates
             
             surrogate_loss_2 = g_func 
 
             surrogate_loss = torch.min(surrogate_loss_1, surrogate_loss_2)
 
-            mean_surrogate_loss += surrogate_loss.item()
+            mean_surrogate_loss += surrogate_loss.mean().item()
 
             # entropy (regularization loss)
-            entropy = self.actor_critic.entropy
-            mean_entropy += entropy.item()
+            entropy = self.actor_critic.entropy.unsqueeze(-1)
+            mean_entropy += entropy.mean().item()
 
             # sum it all up and weight
             total_loss = surrogate_loss + (self.value_loss_coef * value_loss) - (self.entropy_coef * entropy)
-
+            total_loss = -total_loss.mean()
+            print("surrogate_loss:", surrogate_loss.mean().item()  , " value_loss:", value_loss.mean().item(), " entropy:", entropy.mean().item())
             # backpropagation
             self.optimizer.zero_grad()
             total_loss.backward()
