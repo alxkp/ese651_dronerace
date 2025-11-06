@@ -8,9 +8,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 from rsl_rl.modules import ActorCritic
 from rsl_rl.storage import RolloutStorage
+
 
 
 class PPO:
@@ -147,7 +149,55 @@ class PPO:
             _,  # rnd_state_batch - not used anymore
         ) in generator:
             # TODO ----- START -----
+            # PPO parameters
+            # self.clip_param = clip_param
+            # self.num_learning_epochs = num_learning_epochs
+            # self.num_mini_batches = num_mini_batches
+            # self.value_loss_coef = value_loss_coef
+            # self.entropy_coef = entropy_coef
+            # self.gamma = gamma
+            # self.lam = lam
+            # self.max_grad_norm = max_grad_norm
+            # self.use_clipped_value_loss = use_clipped_value_loss
+
             # Implement the PPO update step
+
+            # value loss
+            estimated_values = self.actor_critic.evaluate(critic_observations)
+            value_loss = 0.5 * ((estimated_values - value_targets)**2)
+
+            # bookeeping
+            mean_value_loss += value_loss.item()
+
+
+            # surrogate loss term 1
+            ratio = torch.exp(self.actor_critic.get_actions_log_prob(sampled_actions) - prev_log_probs)
+            surrogate_loss_1 = ratio * advantage_estimates
+            
+
+            # surrogate loss term 2
+            # 1+epsilon A if A > 0, 1-epsilon A if A < 0
+            # a>0 mask
+            g_func = torch.where(advantage_estimates > 0, 1 + self.clip_param, 1 - self.clip_param) * advantage_estimates
+            
+            
+            surrogate_loss_2 = g_func 
+
+            surrogate_loss = torch.min(surrogate_loss_1, surrogate_loss_2)
+
+            mean_surrogate_loss += surrogate_loss.item()
+
+            # entropy (regularization loss)
+            entropy = self.actor_critic.entropy
+            mean_entropy += entropy.item()
+
+            # sum it all up and weight
+            total_loss = surrogate_loss + (self.value_loss_coef * value_loss) - (self.entropy_coef * entropy)
+
+            # backpropagation
+            self.optimizer.zero_grad()
+            total_loss.backward()
+            self.optimizer.step()
             # TODO ----- END -----
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
