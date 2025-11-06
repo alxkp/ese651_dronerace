@@ -165,8 +165,16 @@ class PPO:
             self.actor_critic.update_distribution(observations)
 
             # value loss
+
             estimated_values = self.actor_critic.evaluate(critic_observations)
-            value_loss = 0.5 * ((estimated_values - value_targets)**2)
+
+            if self.use_clipped_value_loss:
+                value_pred_clipped = value_targets + (estimated_values - value_targets).clamp(-self.clip_param, self.clip_param)
+                value_loss_1 = (estimated_values - discounted_returns).pow(2)
+                value_loss_2 = (value_pred_clipped - discounted_returns).pow(2)
+                value_loss = 0.5 * torch.max(value_loss_1, value_loss_2)
+            else:
+                value_loss = 0.5 * ((estimated_values - discounted_returns)**2)
 
             # bookeeping
             mean_value_loss += value_loss.mean().item()
@@ -174,21 +182,21 @@ class PPO:
 
             # surrogate loss term 1
             # pdb.set_trace()
-            
 
-            # self.actor_critic.distribution.loc 
+
+            # self.actor_critic.distribution.loc
             curr_log_probs = self.actor_critic.get_actions_log_prob(sampled_actions).unsqueeze(-1)
             ratio = torch.exp(curr_log_probs - prev_log_probs)
             surrogate_loss_1 = ratio * advantage_estimates
-            
+
 
             # surrogate loss term 2
             # 1+epsilon A if A > 0, 1-epsilon A if A < 0
             # a>0 mask
             # g_func = torch.where(advantage_estimates > 0, 1 + self.clip_param, 1 - self.clip_param) * advantage_estimates
             g_func = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantage_estimates
-            
-            surrogate_loss_2 = g_func 
+
+            surrogate_loss_2 = g_func
 
             surrogate_loss = torch.min(surrogate_loss_1, surrogate_loss_2)
 
@@ -199,12 +207,14 @@ class PPO:
             mean_entropy += entropy.mean().item()
 
             # sum it all up and weight
-            total_loss = surrogate_loss + (self.value_loss_coef * value_loss) - (self.entropy_coef * entropy)
-            total_loss = -total_loss.mean()
-            print("surrogate_loss:", surrogate_loss.mean().item()  , " value_loss:", value_loss.mean().item(), " entropy:", entropy.mean().item())
+            total_loss = -surrogate_loss.mean() + (self.value_loss_coef * value_loss.mean()) - (self.entropy_coef * entropy.mean())
+           
             # backpropagation
             self.optimizer.zero_grad()
             total_loss.backward()
+
+            # clip gradients for stability
+            torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
             # TODO ----- END -----
 

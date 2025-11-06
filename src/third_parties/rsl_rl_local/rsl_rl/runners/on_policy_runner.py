@@ -41,7 +41,8 @@ class OnPolicyRunner:
 
         # Extract main observation
         # breakpoint()
-        obs_dict = obs_dict[1]['observations']
+        if isinstance(obs_dict, tuple):
+            obs_dict = obs_dict[1]['observations']
 
         if "policy" in obs_dict:
             obs = obs_dict["policy"]
@@ -137,7 +138,9 @@ class OnPolicyRunner:
             obs_dict = obs_data
 
         # Extract main observation
-        obs_dict = obs_dict[1]['observations']
+        if isinstance(obs_dict, tuple):
+            obs_dict = obs_dict[1]['observations']
+
         if "policy" in obs_dict:
             obs = obs_dict["policy"]
         elif "obs" in obs_dict:
@@ -179,7 +182,8 @@ class OnPolicyRunner:
 
                     # HACK: fix for format
                     # breakpoint()
-                    obs_dict = {'policy': obs_dict}
+                    if isinstance(obs_dict, torch.Tensor):
+                        obs_dict = {'policy': obs_dict}
 
                     if "policy" in obs_dict:
                         obs = obs_dict["policy"]

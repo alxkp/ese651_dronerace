@@ -67,7 +67,7 @@ from isaaclab_rl.rsl_rl import (
 )
 
 # Import extensions to set up environment tasks
-import src.isaac_quad_sim2real.tasks   # noqa: F401
+import isaac_quad_sim2real.tasks   # noqa: F401
 
 def main():
     """Play with RSL-RL agent."""

@@ -28,7 +28,7 @@ Homepage = "https://github.com/Jirl-upenn/isaac_quad_sim2real"
 Issues = "https://github.com/Jirl-upenn/isaac_quad_sim2real/issues"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["isaac_quad_sim2real*", "third_parties.rsl_rl*"]
 
 [tool.setuptools.package-data]
@@ -66,7 +66,7 @@ known_first_party = "isaac_quad_sim2real"
 
 [tool.pyright]
 
-include = ["isaac_quad_sim2real"]
+include = ["src/isaac_quad_sim2real"]
 
 typeCheckingMode = "basic"
 pythonVersion = "3.10"
