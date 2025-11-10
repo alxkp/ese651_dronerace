@@ -710,6 +710,10 @@ class QuadcopterEnv(DirectRLEnv):
         # Store previous position for progress tracking in rewards
         self._prev_pos_w = self._robot.data.root_link_pos_w.clone()
 
+        # Update gate frame information every step for all environments
+        # This ensures observations and rewards always use current gate info
+        self._update_gate_frame()
+
         self._actions = actions.clone().clamp(-1.0, 1.0)    # actions come directly from the NN
         self._actions = self.cfg.beta * self._actions + (1 - self.cfg.beta) * self._previous_actions
 

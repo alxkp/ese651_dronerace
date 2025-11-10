@@ -164,12 +164,19 @@ class DefaultQuadcopterStrategy:
         ds_shaped = ds
 
         # === Through-gate detection (plane crossing & inside aperture) ===
-        side_prev = torch.sum((prev_pos_w - gate_c) * gate_n, dim=-1)  # [N]
-        side_now  = torch.sum((pos_w - gate_c)  * gate_n, dim=-1)      # [N]
-        crossed = (side_prev < 0) & (side_now >= 0)
+        side_prev = torch.sum((prev_pos_w - gate_c) * gate_n, dim=-1)  # [N] signed distance before
+        side_now  = torch.sum((pos_w - gate_c)  * gate_n, dim=-1)      # [N] signed distance now
+
+        # Forward crossing: negative side to positive side (entering from behind gate normal)
+        # Negative side = behind gate, positive side = in front of gate
+        crossed_forward = (side_prev < 0) & (side_now >= 0)
+
+        # Check if position is within gate aperture when crossing
         x_in = torch.abs(torch.sum((pos_w - gate_c) * ux, dim=-1)) <= half_w
         y_in = torch.abs(torch.sum((pos_w - gate_c) * uy, dim=-1)) <= half_h
-        pass_gate = crossed & x_in & y_in
+
+        # Only count as gate pass if crossed forward AND inside aperture
+        pass_gate = crossed_forward & x_in & y_in
 
         # Update waypoint index when gate is passed
         ids_gate_passed = torch.where(pass_gate)[0]
@@ -179,8 +186,7 @@ class DefaultQuadcopterStrategy:
                 print(f"[DEBUG] Iter {self.env.iteration}: {len(ids_gate_passed)} envs passed gates! Gate size: {self.env._gate_half_width*2:.2f}m")
             self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % self.env._waypoints.shape[0]
             self.env._n_gates_passed[ids_gate_passed] += 1
-            # Update gate frame information for environments that passed a gate
-            self.env._update_gate_frame(ids_gate_passed)
+            # Note: gate frames are now updated every step in _pre_physics_step, so no need to update here
 
         # === Speed shaping ===
         v_along   = torch.sum(vel_w * cl_tan, dim=-1)                   # [N]
@@ -413,45 +419,49 @@ class DefaultQuadcopterStrategy:
 
         default_root_state = self.env._robot.data.default_root_state[env_ids]
 
-        # TODO ----- START ----- Define the initial state during training after resetting an environment.
-        # This example code initializes the drone 2m behind the first gate. You should delete it or heavily
-        # modify it once you begin the racing task.
+        # Reset position: 2-3.5m behind gate on -gate_normal direction with jitter
+        # This ensures drone always starts properly positioned to approach gate
 
-        # start from the zeroth waypoint (beginning of the race)
+        # Start from the zeroth waypoint (beginning of the race)
         waypoint_indices = torch.zeros(n_reset, device=self.device, dtype=self.env._idx_wp.dtype)
 
-        # get starting poses behind waypoints
-        x0_wp = self.env._waypoints[waypoint_indices][:, 0]
-        y0_wp = self.env._waypoints[waypoint_indices][:, 1]
-        theta = self.env._waypoints[waypoint_indices][:, -1]
-        z_wp = self.env._waypoints[waypoint_indices][:, 2]
+        # Get gate position and normal
+        gate_pos = self.env._waypoints[waypoint_indices, :3]  # [n_reset, 3]
+        gate_quat = self.env._waypoints_quat[waypoint_indices, :]  # [n_reset, 4]
 
-        x_local = -2.0 * torch.ones(n_reset, device=self.device)
-        y_local = torch.zeros(n_reset, device=self.device)
-        z_local = torch.zeros(n_reset, device=self.device)
+        # Extract gate normal from quaternion rotation matrix
+        from isaaclab.utils.math import matrix_from_quat
+        gate_rot = matrix_from_quat(gate_quat)  # [n_reset, 3, 3]
+        gate_normal = gate_rot[:, :, 0]  # x-axis is normal (through gate direction)
 
-        # rotate local pos to global frame
-        cos_theta = torch.cos(theta)
-        sin_theta = torch.sin(theta)
-        x_rot = cos_theta * x_local - sin_theta * y_local
-        y_rot = sin_theta * x_local + cos_theta * y_local
-        initial_x = x0_wp - x_rot
-        initial_y = y0_wp - y_rot
-        initial_z = z_local + z_wp
+        # Position 2-3.5m BEHIND gate (opposite to normal direction)
+        distance_behind = torch.empty(n_reset, device=self.device).uniform_(2.0, 3.5)
+        lateral_jitter = torch.empty(n_reset, 2, device=self.device).uniform_(-0.3, 0.3)  # ±30cm
+        height_jitter = torch.empty(n_reset, device=self.device).uniform_(-0.2, 0.2)  # ±20cm
 
-        default_root_state[:, 0] = initial_x
-        default_root_state[:, 1] = initial_y
-        default_root_state[:, 2] = initial_z
+        # Start position = gate_pos - distance * gate_normal + lateral jitter
+        start_pos = gate_pos.clone()
+        start_pos -= distance_behind.unsqueeze(-1) * gate_normal  # move back along -normal
 
-        # point drone towards the zeroth gate
-        initial_yaw = torch.atan2(y0_wp - initial_y, x0_wp - initial_x)
+        # Add lateral jitter using gate horizontal/vertical axes
+        gate_horizontal = gate_rot[:, :, 1]  # y-axis
+        gate_vertical = gate_rot[:, :, 2]    # z-axis
+        start_pos += lateral_jitter[:, 0].unsqueeze(-1) * gate_horizontal
+        start_pos += lateral_jitter[:, 1].unsqueeze(-1) * gate_vertical
+        start_pos[:, 2] += height_jitter  # small height variation
+
+        default_root_state[:, 0:3] = start_pos
+
+        # Point drone towards gate (align with gate normal)
+        # Yaw from gate normal
+        yaw = torch.atan2(gate_normal[:, 1], gate_normal[:, 0])
+        yaw_jitter = torch.empty(n_reset, device=self.device).uniform_(-0.1, 0.1)  # ±5.7 degrees
         quat = quat_from_euler_xyz(
-            torch.zeros(1, device=self.device),
-            torch.zeros(1, device=self.device),
-            initial_yaw + torch.empty(1, device=self.device).uniform_(-0.15, 0.15)
+            torch.zeros(n_reset, device=self.device),
+            torch.zeros(n_reset, device=self.device),
+            yaw + yaw_jitter
         )
         default_root_state[:, 3:7] = quat
-        # TODO ----- END -----
 
         # Handle play mode initial position
         if not self.cfg.is_train:
