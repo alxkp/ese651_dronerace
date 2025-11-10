@@ -273,6 +273,21 @@ class QuadcopterEnv(DirectRLEnv):
 
         self._crashed = torch.zeros(self.num_envs, device=self.device, dtype=torch.int)
 
+        # State tracking for rewards
+        self._prev_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+
+        # Gate dimensions (assuming square gates)
+        self._gate_base_half_width = 0.5  # gate_side / 2 (base size)
+        self._gate_base_half_height = 0.5  # gate_side / 2 (base size)
+        self._gate_half_width = 0.5  # will be updated by curriculum
+        self._gate_half_height = 0.5  # will be updated by curriculum
+
+        # Next gate frame information (for observations and rewards)
+        self._next_gate_center_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self._next_gate_x_w = torch.zeros(self.num_envs, 3, device=self.device)       # horizontal axis
+        self._next_gate_y_w = torch.zeros(self.num_envs, 3, device=self.device)       # vertical axis
+        self._next_gate_normal_w = torch.zeros(self.num_envs, 3, device=self.device)  # normal (through gate)
+
         # Motor dynamics
         self.cfg.thrust_to_weight = 3.15
         r = self.cfg.arm_length * np.sqrt(2.0) / 2.0
@@ -343,10 +358,63 @@ class QuadcopterEnv(DirectRLEnv):
         self._initial_wp = 0
         self._n_run = 0
 
+        # Initialize curriculum gate size
+        if self.cfg.is_train:
+            self._update_curriculum_gate_size()
+
         self.set_debug_vis(self.cfg.debug_vis)
 
     def update_iteration(self, iter):
         self.iteration = iter
+        # Update curriculum gate size based on training iteration
+        if self.cfg.is_train:
+            self._update_curriculum_gate_size()
+
+    def _update_curriculum_gate_size(self):
+        """Update gate size based on curriculum schedule.
+
+        VERY GRADUAL curriculum - stay in easy phases much longer:
+        - iter 0-500: 6.0x wider gates (super easy - learn basic gate passing)
+        - iter 500-1000: 5.0x wider gates (very easy)
+        - iter 1000-1500: 4.0x wider gates (easy)
+        - iter 1500-2000: 3.2x wider gates (medium-easy)
+        - iter 2000-2500: 2.6x wider gates (medium)
+        - iter 2500-3000: 2.2x wider gates (medium-hard)
+        - iter 3000-3500: 1.8x wider gates (hard)
+        - iter 3500-4000: 1.5x wider gates (very hard)
+        - iter 4000-4500: 1.3x wider gates (extremely hard)
+        - iter 4500+: 1.0x normal size (full difficulty)
+        """
+        prev_scale = self._gate_half_width / self._gate_base_half_width
+
+        # Very slow, gradual tapering
+        if self.iteration < 500:
+            scale = 6.0  # Super easy - stay here for 500 iterations
+        elif self.iteration < 1000:
+            scale = 5.0  # Very easy
+        elif self.iteration < 1500:
+            scale = 4.0  # Easy
+        elif self.iteration < 2000:
+            scale = 3.2  # Medium-easy
+        elif self.iteration < 2500:
+            scale = 2.6  # Medium
+        elif self.iteration < 3000:
+            scale = 2.2  # Medium-hard
+        elif self.iteration < 3500:
+            scale = 1.8  # Hard
+        elif self.iteration < 4000:
+            scale = 1.5  # Very hard
+        elif self.iteration < 4500:
+            scale = 1.3  # Extremely hard
+        else:
+            scale = 1.0  # Full difficulty
+
+        self._gate_half_width = self._gate_base_half_width * scale
+        self._gate_half_height = self._gate_base_half_height * scale
+
+        # Log when curriculum stage changes
+        if abs(scale - prev_scale) > 0.01:
+            print(f"[Curriculum] Iteration {self.iteration}: Gate scale = {scale:.1f}x (width={self._gate_half_width*2:.2f}m)")
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # create markers if necessary for the first time
@@ -609,11 +677,39 @@ class QuadcopterEnv(DirectRLEnv):
         cmd_moment = torch.bmm(self.inertia_tensor, omega_dot.unsqueeze(2)).squeeze(2)
         return cmd_moment
 
+    def _update_gate_frame(self, env_ids: torch.Tensor = None):
+        """Update the next gate frame information (center, axes, normal) for given environments.
+
+        Args:
+            env_ids: Environment indices to update. If None, updates all environments.
+        """
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+
+        # Get current gate index for each environment
+        current_gate_idx = self._idx_wp[env_ids]
+
+        # Get gate center position
+        self._next_gate_center_w[env_ids] = self._waypoints[current_gate_idx, :3]
+
+        # Get gate quaternion and convert to rotation matrix
+        gate_quat = self._waypoints_quat[current_gate_idx, :]  # [N,4]
+        gate_rot_matrix = matrix_from_quat(gate_quat)          # [N,3,3]
+
+        # Extract gate frame axes from rotation matrix
+        # Assuming gate frame: x=normal (through gate), y=horizontal, z=vertical
+        self._next_gate_normal_w[env_ids] = gate_rot_matrix[:, :, 0]  # x-axis
+        self._next_gate_x_w[env_ids] = gate_rot_matrix[:, :, 1]       # y-axis (horizontal)
+        self._next_gate_y_w[env_ids] = gate_rot_matrix[:, :, 2]       # z-axis (vertical)
+
     ##########################################################
     ### Functions called in direct_rl_env.py in this order ###
     ##########################################################
 
     def _pre_physics_step(self, actions: torch.Tensor):
+        # Store previous position for progress tracking in rewards
+        self._prev_pos_w = self._robot.data.root_link_pos_w.clone()
+
         self._actions = actions.clone().clamp(-1.0, 1.0)    # actions come directly from the NN
         self._actions = self.cfg.beta * self._actions + (1 - self.cfg.beta) * self._previous_actions
 

@@ -130,6 +130,10 @@ def main():
     # obtain the trained policy for inference
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
+    # Remove forward hooks before exporting (required for JIT scripting)
+    if hasattr(ppo_runner.alg, 'opt_actor') and hasattr(ppo_runner.alg.opt_actor, 'close'):
+        ppo_runner.alg.opt_actor.close()
+
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
     export_policy_as_jit(
@@ -140,10 +144,7 @@ def main():
     )
 
     # reset environment
-    obs = env.get_observations()
-    # Extract tensor from TensorDict for policy
-    if hasattr(obs, "get"):  # Check if it's a TensorDict
-        obs = obs["policy"]  # Extract the policy observation
+    obs, _ = env.get_observations()  # get_observations returns (obs_tensor, info_dict)
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
@@ -152,10 +153,7 @@ def main():
             # agent stepping
             actions = policy(obs)
             # env stepping
-            obs, rewards, dones, infos = env.step(actions)
-            # Extract tensor from TensorDict for policy
-            if hasattr(obs, "get"):  # Check if it's a TensorDict
-                obs = obs["policy"]  # Extract the policy observation
+            obs, rewards, dones, infos = env.step(actions)  # step already returns obs tensor, not dict
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
