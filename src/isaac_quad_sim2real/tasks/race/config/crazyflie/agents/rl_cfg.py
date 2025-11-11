@@ -75,6 +75,19 @@ class RslRlPpoAlgorithmCfg:
     max_grad_norm: float = MISSING
     """The maximum gradient norm."""
 
+    # Optimizer configuration
+    opt: str = "adamw"
+    """Optimizer type: 'adamw' or 'muon'. Default is adamw for simplicity."""
+
+    use_right_actor: bool = False
+    """Whether to use right preconditioning on actor. Default is False for stability."""
+
+    weight_decay: float = 0.0
+    """Weight decay for optimizer. Default is 0.0."""
+
+    normalize_advantage_per_mini_batch: bool = False
+    """Whether to normalize advantages per mini-batch. Default is False."""
+
 
 @configclass
 class RslRlOnPolicyRunnerCfg:

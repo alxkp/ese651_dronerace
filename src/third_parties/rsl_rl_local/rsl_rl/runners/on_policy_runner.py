@@ -254,6 +254,9 @@ class OnPolicyRunner:
                     self.save(os.path.join(self.log_dir, "best_model.pt"))
                     print(f"New best model saved with reward: {curr_reward}")
                     self.max_reward = curr_reward
+                    # Update environment's best saved reward tracker for logging
+                    if hasattr(self.env, '_best_saved_reward'):
+                        self.env._best_saved_reward = curr_reward
 
             # Clear episode infos
             ep_infos.clear()

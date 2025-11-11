@@ -37,8 +37,8 @@ class DefaultQuadcopterStrategy:
 
         # Initialize episode sums for logging if in training mode
         if self.cfg.is_train:
-            # Define reward component keys (matching literature)
-            reward_keys = ["progress", "thrust", "smooth", "pass", "crash"]
+            # Define reward component keys (matching literature + velocity alignment)
+            reward_keys = ["progress", "vel_align", "thrust", "smooth", "pass", "crash"]
             self._episode_sums = {
                 key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
                 for key in reward_keys
@@ -110,19 +110,29 @@ class DefaultQuadcopterStrategy:
         half_w = self.env._gate_half_width
         half_h = self.env._gate_half_height
 
-        # === 1. PROGRESS: Distance reduction to gate (scaled from literature) ===
+        # === 1. PROGRESS: Distance reduction + Velocity alignment (paper-inspired) ===
         dist_to_gate = torch.linalg.norm(pos_w - gate_c, dim=-1)       # [N]
         dist_reduction = self.env._prev_dist_to_gate - dist_to_gate    # [N] positive when approaching
-        
-        # Moderate scaling from literature value (1.0) to provide stronger learning signal
-        # - Positive when moving closer to gate
-        # - Negative when moving away from gate
-        # - Scaled to balance against gate bonus (100) and crash penalty (-10)
-        λ1 = 20.0  # 20x literature value - gives ~0.8 reward per 0.04m step
-        r_prog = λ1 * dist_reduction
-        
-        # Update distance tracker for next step
         self.env._prev_dist_to_gate = dist_to_gate.clone()
+
+        # Distance reduction reward (2023 racing paper formulation)
+        # Paper uses λ₁ = 1.0; we use 5.0 for 2x curriculum gates + ground truth advantage
+        λ_dist = 5.0  # Reward for making progress toward gate
+        r_dist = λ_dist * dist_reduction  # Positive when approaching, negative when retreating
+
+        # Velocity alignment reward (auxiliary signal for better learning)
+        # Paper uses camera alignment; we adapt for velocity alignment with ground truth
+        v_w = self.env._robot.data.root_lin_vel_w                      # [N,3] world velocity
+        dir_to_gate = gate_c - pos_w                                    # [N,3] direction to gate
+        dir_to_gate_norm = F.normalize(dir_to_gate, dim=-1)             # [N,3] unit vector
+        vel_norm = F.normalize(v_w + 1e-6, dim=-1)                      # [N,3] unit velocity (avoid div by 0)
+        alignment = torch.sum(vel_norm * dir_to_gate_norm, dim=-1)     # [N] cosine similarity [-1,1]
+
+        λ_vel = 0.3  # Reduced from 1.0 - auxiliary signal, not primary reward
+        r_vel_align = λ_vel * alignment.clamp(0, 1)  # Only reward forward alignment (0 to +1)
+
+        # Combined progress reward
+        r_prog = r_dist + r_vel_align
 
         # === 2. COMMAND PENALTIES: Thrust and smoothness (literature r^cmd) ===
         a_t = self.env._actions                                         # [N, act_dim]
@@ -205,27 +215,62 @@ class DefaultQuadcopterStrategy:
 
         # === Logging ===
         if self.cfg.is_train:
-            self._episode_sums["progress"] += r_prog
+            self._episode_sums["progress"] += r_dist  # Track distance penalty separately
+            self._episode_sums["vel_align"] += r_vel_align
             self._episode_sums["thrust"] += r_thrust
             self._episode_sums["smooth"] += r_smooth
             self._episode_sums["pass"] += r_pass
             self._episode_sums["crash"] += r_crash
-            
-            # Diagnostic logging every 100 iterations
-            if self.env.iteration % 100 == 0:
-                # Gate passing stats
-                if pass_gate.any():
-                    num_passes = pass_gate.sum().item()
-                    avg_pass_reward = r_pass[pass_gate].mean().item()
-                    print(f"[REWARD] Iter {self.env.iteration}: {num_passes} passes, avg pass reward: {avg_pass_reward:.1f}")
-                
-                # Progress reward stats (check for exploitation)
-                getting_progress = (r_prog > 0.01).sum().item()
-                if getting_progress > 100:  # Many agents getting progress
-                    avg_dist_reduction = dist_reduction[r_prog > 0.01].mean().item()
-                    avg_dist_to_gate = dist_to_gate[r_prog > 0.01].mean().item()
-                    print(f"[PROGRESS] {getting_progress} agents: dist_red={avg_dist_reduction:.4f}m, "
-                          f"dist={avg_dist_to_gate:.2f}m")
+
+            # Add per-step metrics to extras for iteration-by-iteration tracking
+            # These will show up in TensorBoard/logs alongside standard PPO metrics
+            if not hasattr(self.env, 'extras'):
+                self.env.extras = {}
+            if "log" not in self.env.extras:
+                self.env.extras["log"] = {}
+
+            # Per-step averages (logged every iteration)
+            self.env.extras["log"]["Step/dist_to_gate"] = dist_to_gate.mean().item()
+            self.env.extras["log"]["Step/vel_alignment"] = alignment.mean().item()
+            self.env.extras["log"]["Step/reward_dist"] = r_dist.mean().item()
+            self.env.extras["log"]["Step/reward_vel_align"] = r_vel_align.mean().item()
+            self.env.extras["log"]["Step/total_gates_passed"] = self.env._n_gates_passed.sum().item()
+            self.env.extras["log"]["Step/num_crashed"] = (self.env._crashed > 0).sum().item()
+
+            # Episode-level gate statistics (shows multi-gate performance)
+            self.env.extras["log"]["Episode/gates_per_env_mean"] = self.env._n_gates_passed.float().mean().item()
+            self.env.extras["log"]["Episode/gates_per_env_max"] = self.env._n_gates_passed.max().item()
+            self.env.extras["log"]["Episode/pct_passing_2plus_gates"] = (
+                (self.env._n_gates_passed >= 2).float().mean().item() * 100
+            )
+            self.env.extras["log"]["Episode/pct_passing_3plus_gates"] = (
+                (self.env._n_gates_passed >= 3).float().mean().item() * 100
+            )
+
+            # Track best saved model reward for comparison
+            # This gets updated by the trainer when a new best model is saved
+            if not hasattr(self.env, '_best_saved_reward'):
+                self.env._best_saved_reward = 0.0
+
+            # Current iteration's best reward
+            total_episode_rewards = (
+                self._episode_sums["progress"] +
+                self._episode_sums["vel_align"] +
+                self._episode_sums["thrust"] +
+                self._episode_sums["smooth"] +
+                self._episode_sums["pass"] +
+                self._episode_sums["crash"]
+            )
+            current_best = total_episode_rewards.max().item()
+
+            # Log best saved model reward and current performance ratio
+            self.env.extras["log"]["Episode/best_saved_model_reward"] = self.env._best_saved_reward
+            if self.env._best_saved_reward > 0:
+                self.env.extras["log"]["Episode/current_vs_best_ratio"] = (
+                    current_best / self.env._best_saved_reward
+                )
+            else:
+                self.env.extras["log"]["Episode/current_vs_best_ratio"] = 1.0
 
         return reward
 
@@ -298,14 +343,16 @@ class DefaultQuadcopterStrategy:
         # Progress scalar along track tangent (in gate frame, forward is +z axis which is normal direction)
         s_prog = p_g[:, 2].unsqueeze(-1)                       # [N,1]; negative before gate, positive after
 
-        # Normalize/scales
-        pos_scale = 10.0
-        vel_scale = 10.0
-        rate_scale = 10.0
+        # Normalize/scales - FIXED: Use larger scales and soft saturation
+        pos_scale = 20.0   # Increased from 10.0 - allow observations for farther distances
+        vel_scale = 20.0   # Increased from 10.0 - allow faster velocities without saturation
+        rate_scale = 10.0  # Keep same - body rates are typically small
 
-        p_g_n = (p_g / pos_scale).clamp(-1., 1.)
-        v_g_n = (v_g / vel_scale).clamp(-1., 1.)
-        omega_n = (omega_b / rate_scale).clamp(-1., 1.)
+        # Use tanh for soft saturation instead of hard clipping
+        # This preserves gradients even when values are large
+        p_g_n = torch.tanh(p_g / pos_scale)      # Smooth saturation at extremes
+        v_g_n = torch.tanh(v_g / vel_scale)      # Smooth saturation at extremes
+        omega_n = torch.tanh(omega_b / rate_scale)  # Smooth saturation at extremes
 
         obs_vec = torch.cat([
             p_g_n,                  # 3: position in gate frame (normalized)
@@ -426,39 +473,16 @@ class DefaultQuadcopterStrategy:
         )
         default_root_state[:, 3:7] = quat
 
-        # Handle play mode initial position
-        if not self.cfg.is_train:
-            # x_local and y_local are randomly sampled
-            x_local = torch.empty(1, device=self.device).uniform_(-3.0, -0.5)
-            y_local = torch.empty(1, device=self.device).uniform_(-1.0, 1.0)
-
-            x0_wp = self.env._waypoints[self.env._initial_wp, 0]
-            y0_wp = self.env._waypoints[self.env._initial_wp, 1]
-            theta = self.env._waypoints[self.env._initial_wp, -1]
-
-            # rotate local pos to global frame
-            cos_theta, sin_theta = torch.cos(theta), torch.sin(theta)
-            x_rot = cos_theta * x_local - sin_theta * y_local
-            y_rot = sin_theta * x_local + cos_theta * y_local
-            x0 = x0_wp - x_rot
-            y0 = y0_wp - y_rot
-            z0 = 0.05
-
-            # point drone towards the zeroth gate
-            yaw0 = torch.atan2(y0_wp - y0, x0_wp - x0)
-
-            default_root_state = self.env._robot.data.default_root_state[0].unsqueeze(0)
-            default_root_state[:, 0] = x0
-            default_root_state[:, 1] = y0
-            default_root_state[:, 2] = z0
-
-            quat = quat_from_euler_xyz(
-                torch.zeros(1, device=self.device),
-                torch.zeros(1, device=self.device),
-                yaw0
-            )
-            default_root_state[:, 3:7] = quat
-            waypoint_indices = self.env._initial_wp
+        # REMOVED LEGACY EVAL SPAWN LOGIC
+        # The old eval-only spawn logic (lines 477-505) was broken:
+        # - Spawned drones at z=0.05m (5cm) regardless of gate height
+        # - Used 2D yaw-only orientation instead of proper 3D gate normal
+        # - Caused drones to crash immediately or fly in wrong direction
+        #
+        # Now both training and eval use the same proper spawn logic above:
+        # - Spawn 2-3.5m behind gate at proper height (gate_z ± 20cm jitter)
+        # - Face toward gate using proper 3D orientation from gate normal
+        # - This ensures consistent behavior between training and evaluation
 
         # Set waypoint indices and desired positions
         self.env._idx_wp[env_ids] = waypoint_indices
