@@ -144,7 +144,7 @@ def main():
     )
 
     # reset environment
-    obs, _ = env.get_observations()  # get_observations returns (obs_tensor, info_dict)
+    obs = env.get_observations()['policy']  # get_observations returns (obs_tensor, info_dict)
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
@@ -154,6 +154,7 @@ def main():
             actions = policy(obs)
             # env stepping
             obs, rewards, dones, infos = env.step(actions)  # step already returns obs tensor, not dict
+            obs = obs['policy']
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video

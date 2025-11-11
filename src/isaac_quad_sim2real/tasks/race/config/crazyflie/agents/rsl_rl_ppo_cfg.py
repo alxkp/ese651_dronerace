@@ -11,7 +11,7 @@ from .rl_cfg import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgo
 @configclass
 class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
-    max_iterations = 5000  # Increased to accommodate longer curriculum
+    max_iterations = 10000  # Increased to complete full curriculum (10k iters for 1.0x gates)
     save_interval = 100    # Save less frequently
     experiment_name = "quadcopter_direct"
     empirical_normalization = False # Disable to prevent crushing gate-relative observations
@@ -19,7 +19,7 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[128, 128],
-        critic_hidden_dims=[512, 256, 128, 128],
+        critic_hidden_dims=[512, 512, 256, 256],  # Increased capacity to better predict returns
         activation="elu",
         min_std=0.15,             # Higher minimum std to prevent premature convergence (was 0.05)
     )
@@ -27,12 +27,12 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.05,        # Strong exploration to prevent premature convergence (was 0.02)
+        entropy_coef=0.10,        # FIX 5: Doubled to 0.10 to prevent premature convergence to hover strategy
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=3.0e-4,     # Slightly lower LR (was 5e-4) for more stable learning
         schedule="adaptive",
-        gamma=0.99,
+        gamma=0.9,
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,

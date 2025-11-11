@@ -275,6 +275,9 @@ class QuadcopterEnv(DirectRLEnv):
 
         # State tracking for rewards
         self._prev_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        
+        # Distance tracking for distance-reduction reward (literature approach)
+        self._prev_dist_to_gate = torch.full((self.num_envs,), 999.0, device=self.device)
 
         # Gate dimensions (assuming square gates)
         self._gate_base_half_width = 0.5  # gate_side / 2 (base size)
@@ -373,41 +376,26 @@ class QuadcopterEnv(DirectRLEnv):
     def _update_curriculum_gate_size(self):
         """Update gate size based on curriculum schedule.
 
-        VERY GRADUAL curriculum - stay in easy phases much longer:
-        - iter 0-500: 6.0x wider gates (super easy - learn basic gate passing)
-        - iter 500-1000: 5.0x wider gates (very easy)
-        - iter 1000-1500: 4.0x wider gates (easy)
-        - iter 1500-2000: 3.2x wider gates (medium-easy)
-        - iter 2000-2500: 2.6x wider gates (medium)
-        - iter 2500-3000: 2.2x wider gates (medium-hard)
-        - iter 3000-3500: 1.8x wider gates (hard)
-        - iter 3500-4000: 1.5x wider gates (very hard)
-        - iter 4000-4500: 1.3x wider gates (extremely hard)
-        - iter 4500+: 1.0x normal size (full difficulty)
+        Efficient curriculum - learn faster with smoother progression:
+        - iter 0-2000: 2.0x wider gates (easier start - learn basic passing)
+        - iter 2000-5000: 1.5x wider gates (medium difficulty)
+        - iter 5000-10000: 1.2x wider gates (approaching full difficulty)
+        - iter 10000+: 1.0x normal size (full difficulty)
+        
+        This allows agents to learn passing behavior quickly on easier gates,
+        then refine skills as gates shrink to normal size.
         """
         prev_scale = self._gate_half_width / self._gate_base_half_width
 
-        # Very slow, gradual tapering
-        if self.iteration < 500:
-            scale = 6.0  # Super easy - stay here for 500 iterations
-        elif self.iteration < 1000:
-            scale = 5.0  # Very easy
-        elif self.iteration < 1500:
-            scale = 4.0  # Easy
-        elif self.iteration < 2000:
-            scale = 3.2  # Medium-easy
-        elif self.iteration < 2500:
-            scale = 2.6  # Medium
-        elif self.iteration < 3000:
-            scale = 2.2  # Medium-hard
-        elif self.iteration < 3500:
-            scale = 1.8  # Hard
-        elif self.iteration < 4000:
-            scale = 1.5  # Very hard
-        elif self.iteration < 4500:
-            scale = 1.3  # Extremely hard
+        # Gradual tapering with efficient milestones
+        if self.iteration < 2000:
+            scale = 2.0  # 2x bigger - learn basics of passing through gates
+        elif self.iteration < 5000:
+            scale = 1.5  # Gradually increase difficulty
+        elif self.iteration < 10000:
+            scale = 1.2  # Near full difficulty
         else:
-            scale = 1.0  # Full difficulty
+            scale = 1.0  # Full difficulty - normal gate size
 
         self._gate_half_width = self._gate_base_half_width * scale
         self._gate_half_height = self._gate_base_half_height * scale
