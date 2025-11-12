@@ -43,8 +43,8 @@ class QuadcopterPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
         # FIXED: Simplify optimizer configuration for stability
-        opt="adamw",              # Use simple AdamW instead of Muon
-        use_right_actor=False,    # Disable right preconditioning for stability
+        opt="muon",              # Use simple AdamW instead of Muon
+        use_right_actor=True,    # Disable right preconditioning for stability
         weight_decay=0.0,         # No weight decay for now
         normalize_advantage_per_mini_batch=False,  # Standard advantage normalization
     )
