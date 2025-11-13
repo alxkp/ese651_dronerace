@@ -128,7 +128,7 @@ class DefaultQuadcopterStrategy:
         vel_norm = F.normalize(v_w + 1e-6, dim=-1)                      # [N,3] unit velocity (avoid div by 0)
         alignment = torch.sum(vel_norm * dir_to_gate_norm, dim=-1)     # [N] cosine similarity [-1,1]
 
-        λ_vel = 0.3  # Reduced from 1.0 - auxiliary signal, not primary reward
+        λ_vel = 3.0  # Increased from 0.3 to encourage faster flight toward gates
         r_vel_align = λ_vel * alignment.clamp(0, 1)  # Only reward forward alignment (0 to +1)
 
         # Combined progress reward
@@ -444,21 +444,22 @@ class DefaultQuadcopterStrategy:
         gate_rot = matrix_from_quat(gate_quat)  # [n_reset, 3, 3]
         gate_normal = gate_rot[:, :, 0]  # x-axis is normal (through gate direction)
 
-        # Position 2-3.5m BEHIND gate (opposite to normal direction)
-        distance_behind = torch.empty(n_reset, device=self.device).uniform_(2.0, 3.5)
+        # Position 2-3.5m AHEAD of gate (in +normal direction, past the gate)
+        distance_ahead = torch.empty(n_reset, device=self.device).uniform_(2.0, 3.5)
         lateral_jitter = torch.empty(n_reset, 2, device=self.device).uniform_(-0.3, 0.3)  # ±30cm
-        height_jitter = torch.empty(n_reset, device=self.device).uniform_(-0.2, 0.2)  # ±20cm
 
-        # Start position = gate_pos - distance * gate_normal + lateral jitter
+        # Start position = gate_pos + distance * gate_normal + lateral jitter
         start_pos = gate_pos.clone()
-        start_pos -= distance_behind.unsqueeze(-1) * gate_normal  # move back along -normal
+        start_pos += distance_ahead.unsqueeze(-1) * gate_normal  # move forward along +normal (ahead of gate)
 
         # Add lateral jitter using gate horizontal/vertical axes
         gate_horizontal = gate_rot[:, :, 1]  # y-axis
         gate_vertical = gate_rot[:, :, 2]    # z-axis
         start_pos += lateral_jitter[:, 0].unsqueeze(-1) * gate_horizontal
         start_pos += lateral_jitter[:, 1].unsqueeze(-1) * gate_vertical
-        start_pos[:, 2] += height_jitter  # small height variation
+
+        # Force ground spawn at 5cm altitude (no height jitter)
+        start_pos[:, 2] = 0.05  # Ground level spawn
 
         default_root_state[:, 0:3] = start_pos
 

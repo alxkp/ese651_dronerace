@@ -131,7 +131,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     track_name = 'complex'
 
     # env
-    episode_length_s = 30.0             # episode_length = episode_length_s / dt / decimation
+    episode_length_s = 120.0            # episode_length = episode_length_s / dt / decimation (4x longer for multiple laps)
     action_space = 4
     observation_space = 1 # inconsequential, just needs to exist for Gymnasium compatibility
     state_space = 0
@@ -378,10 +378,10 @@ class QuadcopterEnv(DirectRLEnv):
 
         Efficient curriculum - learn faster with smoother progression:
         - iter 0-2000: 2.0x wider gates (easier start - learn basic passing)
-        - iter 2000-5000: 1.5x wider gates (medium difficulty)
-        - iter 5000-10000: 1.2x wider gates (approaching full difficulty)
-        - iter 10000+: 1.0x normal size (full difficulty)
-        
+        - iter 2000-3500: 1.5x wider gates (medium difficulty)
+        - iter 3500-5000: 1.2x wider gates (approaching full difficulty)
+        - iter 5000+: 1.0x normal size (full difficulty)
+
         This allows agents to learn passing behavior quickly on easier gates,
         then refine skills as gates shrink to normal size.
         """
@@ -390,12 +390,12 @@ class QuadcopterEnv(DirectRLEnv):
         # Gradual tapering with efficient milestones
         if self.iteration < 2000:
             scale = 2.0  # 2x bigger - learn basics of passing through gates
-        elif self.iteration < 5000:
+        elif self.iteration < 3500:
             scale = 1.5  # Gradually increase difficulty
-        elif self.iteration < 10000:
+        elif self.iteration < 5000:
             scale = 1.2  # Near full difficulty
         else:
-            scale = 1.0  # Full difficulty - normal gate size
+            scale = 1.0  # Full difficulty - normal gate size (reached at iter 5000)
 
         self._gate_half_width = self._gate_base_half_width * scale
         self._gate_half_height = self._gate_base_half_height * scale
