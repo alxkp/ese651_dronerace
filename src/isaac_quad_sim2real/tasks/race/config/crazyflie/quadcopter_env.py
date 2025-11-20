@@ -227,6 +227,10 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
 
     max_n_laps = 3
 
+    # Domain randomization control
+    enable_domain_rand = False  # Enable after policy can complete 3 laps
+    domain_rand_start_iter = 8000  # Only randomize after this iteration
+
     rewards = {}
 
     # Strategy class for custom rewards, observations, and resets
@@ -272,6 +276,12 @@ class QuadcopterEnv(DirectRLEnv):
         self._n_gates_passed = torch.zeros(self.num_envs, device=self.device, dtype=torch.int)
 
         self._crashed = torch.zeros(self.num_envs, device=self.device, dtype=torch.int)
+
+        # Lap tracking for timing
+        self._current_lap = torch.zeros(self.num_envs, device=self.device, dtype=torch.int)
+        self._lap_start_time = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
+        self._lap_times = torch.zeros(self.num_envs, 3, device=self.device, dtype=torch.float32)  # Store times for 3 laps
+        self._race_completed = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
 
         # State tracking for rewards
         self._prev_pos_w = torch.zeros(self.num_envs, 3, device=self.device)

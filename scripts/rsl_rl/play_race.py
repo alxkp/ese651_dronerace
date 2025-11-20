@@ -67,7 +67,7 @@ from isaaclab_rl.rsl_rl import (
 )
 
 # Import extensions to set up environment tasks
-import isaac_quad_sim2real.tasks   # noqa: F401
+import src.isaac_quad_sim2real.tasks   # noqa: F401
 
 def main():
     """Play with RSL-RL agent."""
@@ -103,22 +103,6 @@ def main():
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
-    # CRITICAL FIX: Set curriculum gate size to match training iteration
-    # The curriculum is only updated during training, so we must manually set it for eval
-    # Load the checkpoint to get the training iteration number
-    checkpoint = torch.load(resume_path, weights_only=False)
-    training_iteration = checkpoint.get("iter", 0)
-    print(f"[INFO] Training iteration from checkpoint: {training_iteration}")
-
-    # Apply curriculum gate size based on training iteration
-    # This ensures eval uses same gate size as training
-    if hasattr(env.unwrapped, 'iteration'):
-        env.unwrapped.iteration = training_iteration
-        if hasattr(env.unwrapped, '_update_curriculum_gate_size'):
-            env.unwrapped._update_curriculum_gate_size()
-            gate_scale = env.unwrapped._gate_half_width / env.unwrapped._gate_base_half_width
-            print(f"[INFO] Set eval gate scale to {gate_scale:.2f}x (matching training iteration {training_iteration})")
-
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
@@ -146,10 +130,6 @@ def main():
     # obtain the trained policy for inference
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
-    # Remove forward hooks before exporting (required for JIT scripting)
-    if hasattr(ppo_runner.alg, 'opt_actor') and hasattr(ppo_runner.alg.opt_actor, 'close'):
-        ppo_runner.alg.opt_actor.close()
-
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
     export_policy_as_jit(
@@ -160,21 +140,27 @@ def main():
     )
 
     # reset environment
-    obs = env.get_observations()['policy']  # get_observations returns (obs_tensor, info_dict)
+    obs = env.get_observations()
+    # Extract tensor from TensorDict for policy
+    if hasattr(obs, "get"):  # Check if it's a TensorDict
+        obs = obs["policy"]  # Extract the policy observation
     timestep = 0
     # simulate environment
-    # NOTE: gym.wrappers.RecordVideo will automatically stop recording after video_length steps
-    # We should continue running to allow multiple episodes if video_length > episode_length
-    total_steps_to_run = args_cli.video_length if args_cli.video else 10000  # Run for video_length or 10k steps
-    while simulation_app.is_running() and timestep < total_steps_to_run:
+    while simulation_app.is_running():
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
             actions = policy(obs)
             # env stepping
-            obs, rewards, dones, infos = env.step(actions)  # step already returns obs tensor, not dict
-            obs = obs['policy']
-        timestep += 1
+            obs, rewards, dones, infos = env.step(actions)
+            # Extract tensor from TensorDict for policy
+            if hasattr(obs, "get"):  # Check if it's a TensorDict
+                obs = obs["policy"]  # Extract the policy observation
+        if args_cli.video:
+            timestep += 1
+            # Exit the play loop after recording one video
+            if timestep == args_cli.video_length:
+                break
 
     # close the simulator
     env.close()

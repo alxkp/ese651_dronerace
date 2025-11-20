@@ -44,28 +44,99 @@ class DefaultQuadcopterStrategy:
                 for key in reward_keys
             }
 
-        # Initialize fixed parameters once (no domain randomization)
-        # These parameters remain constant throughout the simulation
-        # Aerodynamic drag coefficients
+        # Domain randomization ranges (for sim2real transfer)
+        # TWR
+        self._twr_min = self.env._twr_value * 0.95
+        self._twr_max = self.env._twr_value * 1.05
+        # Aerodynamics
+        self._k_aero_xy_min = self.env._k_aero_xy_value * 0.5
+        self._k_aero_xy_max = self.env._k_aero_xy_value * 2.0
+        self._k_aero_z_min = self.env._k_aero_z_value * 0.5
+        self._k_aero_z_max = self.env._k_aero_z_value * 2.0
+        # PID gains
+        self._kp_omega_rp_min = self.env._kp_omega_rp_value * 0.85
+        self._kp_omega_rp_max = self.env._kp_omega_rp_value * 1.15
+        self._ki_omega_rp_min = self.env._ki_omega_rp_value * 0.85
+        self._ki_omega_rp_max = self.env._ki_omega_rp_value * 1.15
+        self._kd_omega_rp_min = self.env._kd_omega_rp_value * 0.7
+        self._kd_omega_rp_max = self.env._kd_omega_rp_value * 1.3
+        self._kp_omega_y_min = self.env._kp_omega_y_value * 0.85
+        self._kp_omega_y_max = self.env._kp_omega_y_value * 1.15
+        self._ki_omega_y_min = self.env._ki_omega_y_value * 0.85
+        self._ki_omega_y_max = self.env._ki_omega_y_value * 1.15
+        self._kd_omega_y_min = self.env._kd_omega_y_value * 0.7
+        self._kd_omega_y_max = self.env._kd_omega_y_value * 1.3
+        self._tau_m_min = self.env._tau_m_value * 0.8
+        self._tau_m_max = self.env._tau_m_value * 1.2
+
+        # Initialize with nominal values (will be randomized on first reset)
         self.env._K_aero[:, :2] = self.env._k_aero_xy_value
         self.env._K_aero[:, 2] = self.env._k_aero_z_value
-
-        # PID controller gains for angular rate control
-        # Roll and pitch use the same gains
         self.env._kp_omega[:, :2] = self.env._kp_omega_rp_value
         self.env._ki_omega[:, :2] = self.env._ki_omega_rp_value
         self.env._kd_omega[:, :2] = self.env._kd_omega_rp_value
-
-        # Yaw has different gains
         self.env._kp_omega[:, 2] = self.env._kp_omega_y_value
         self.env._ki_omega[:, 2] = self.env._ki_omega_y_value
         self.env._kd_omega[:, 2] = self.env._kd_omega_y_value
-
-        # Motor time constants (same for all 4 motors)
         self.env._tau_m[:] = self.env._tau_m_value
-
-        # Thrust to weight ratio
         self.env._thrust_to_weight[:] = self.env._twr_value
+
+    def _randomize_domain_params(self, env_ids: torch.Tensor):
+        """Randomize at least 3 physical parameters for domain randomization.
+
+        Randomly selects 3-6 parameters to randomize per reset for better generalization.
+        """
+        n_envs = len(env_ids)
+
+        # Define all randomizable parameters with their ranges
+        param_options = [
+            ('twr', self._twr_min, self._twr_max),
+            ('k_aero_xy', self._k_aero_xy_min, self._k_aero_xy_max),
+            ('k_aero_z', self._k_aero_z_min, self._k_aero_z_max),
+            ('kp_omega_rp', self._kp_omega_rp_min, self._kp_omega_rp_max),
+            ('ki_omega_rp', self._ki_omega_rp_min, self._ki_omega_rp_max),
+            ('kd_omega_rp', self._kd_omega_rp_min, self._kd_omega_rp_max),
+            ('kp_omega_y', self._kp_omega_y_min, self._kp_omega_y_max),
+            ('ki_omega_y', self._ki_omega_y_min, self._ki_omega_y_max),
+            ('kd_omega_y', self._kd_omega_y_min, self._kd_omega_y_max),
+            ('tau_m', self._tau_m_min, self._tau_m_max),
+        ]
+
+        # For each environment, randomly select 3-6 parameters to randomize
+        for i, env_id in enumerate(env_ids):
+            # Randomly choose how many params to randomize (3-6)
+            n_params_to_randomize = torch.randint(3, 7, (1,)).item()
+
+            # Randomly select which parameters to randomize
+            indices = torch.randperm(len(param_options))[:n_params_to_randomize]
+
+            for idx in indices:
+                param_name, min_val, max_val = param_options[idx]
+
+                # Sample random value in range
+                rand_val = torch.rand(1, device=self.device).item() * (max_val - min_val) + min_val
+
+                # Apply to environment
+                if param_name == 'twr':
+                    self.env._thrust_to_weight[env_id] = rand_val
+                elif param_name == 'k_aero_xy':
+                    self.env._K_aero[env_id, :2] = rand_val
+                elif param_name == 'k_aero_z':
+                    self.env._K_aero[env_id, 2] = rand_val
+                elif param_name == 'kp_omega_rp':
+                    self.env._kp_omega[env_id, :2] = rand_val
+                elif param_name == 'ki_omega_rp':
+                    self.env._ki_omega[env_id, :2] = rand_val
+                elif param_name == 'kd_omega_rp':
+                    self.env._kd_omega[env_id, :2] = rand_val
+                elif param_name == 'kp_omega_y':
+                    self.env._kp_omega[env_id, 2] = rand_val
+                elif param_name == 'ki_omega_y':
+                    self.env._ki_omega[env_id, 2] = rand_val
+                elif param_name == 'kd_omega_y':
+                    self.env._kd_omega[env_id, 2] = rand_val
+                elif param_name == 'tau_m':
+                    self.env._tau_m[env_id, :] = rand_val
 
     def get_rewards(self) -> torch.Tensor:
         """Reward structure matching literature EXACTLY.
@@ -128,7 +199,33 @@ class DefaultQuadcopterStrategy:
         vel_norm = F.normalize(v_w + 1e-6, dim=-1)                      # [N,3] unit velocity (avoid div by 0)
         alignment = torch.sum(vel_norm * dir_to_gate_norm, dim=-1)     # [N] cosine similarity [-1,1]
 
-        λ_vel = 3.0  # Increased from 0.3 to encourage faster flight toward gates
+        # Two-stage speed curriculum:
+        # Stage 1 (0-8200): Learn gate-passing and lap completion
+        # Stage 2 (8200+): Gradually increase speed to optimize lap times
+
+        # Stage 1: Basic speed curriculum
+        iter_stage1_start = 4200
+        iter_stage1_end = 8200
+        λ_vel_min = 3.0
+        λ_vel_stage1_max = 20.0
+
+        # Stage 2: Continue ramping for faster lap times
+        iter_stage2_end = 15000  # Ramp to max over ~7000 more iterations
+        λ_vel_stage2_max = 50.0  # Ultimate speed target
+
+        if self.env.iteration < iter_stage1_start:
+            λ_vel = λ_vel_min
+        elif self.env.iteration < iter_stage1_end:
+            # Stage 1: Linear ramp 3.0 → 20.0
+            progress = (self.env.iteration - iter_stage1_start) / (iter_stage1_end - iter_stage1_start)
+            λ_vel = λ_vel_min + progress * (λ_vel_stage1_max - λ_vel_min)
+        elif self.env.iteration < iter_stage2_end:
+            # Stage 2: Continue ramping 20.0 → 50.0 for lap time optimization
+            progress = (self.env.iteration - iter_stage1_end) / (iter_stage2_end - iter_stage1_end)
+            λ_vel = λ_vel_stage1_max + progress * (λ_vel_stage2_max - λ_vel_stage1_max)
+        else:
+            λ_vel = λ_vel_stage2_max
+
         r_vel_align = λ_vel * alignment.clamp(0, 1)  # Only reward forward alignment (0 to +1)
 
         # Combined progress reward
@@ -182,18 +279,44 @@ class DefaultQuadcopterStrategy:
         if len(ids_gate_passed) > 0:
             self.env._idx_wp[ids_gate_passed] = (self.env._idx_wp[ids_gate_passed] + 1) % self.env._waypoints.shape[0]
             self.env._n_gates_passed[ids_gate_passed] += 1
-            
+
             new_idx_wp = self.env._idx_wp[ids_gate_passed]
-            
+
             # CRITICAL FIX: Update _desired_pos_w to move the red target dot visualization!
             self.env._desired_pos_w[ids_gate_passed, :2] = self.env._waypoints[new_idx_wp, :2]
             self.env._desired_pos_w[ids_gate_passed, 2] = self.env._waypoints[new_idx_wp, 2]
-            
+
             # Reset distance tracking for new gate
             new_gate_c = self.env._waypoints[self.env._idx_wp[ids_gate_passed], :3]
             self.env._prev_dist_to_gate[ids_gate_passed] = torch.linalg.norm(
                 pos_w[ids_gate_passed] - new_gate_c, dim=-1
             )
+
+            # Lap tracking: Check if a lap was completed
+            # Each lap consists of passing all gates (self.env._waypoints.shape[0] gates)
+            num_gates_per_lap = self.env._waypoints.shape[0]
+            current_time = self.env.episode_length_buf[ids_gate_passed].float() * self.cfg.sim.dt * self.cfg.decimation
+
+            for env_id in ids_gate_passed:
+                gates_passed = self.env._n_gates_passed[env_id].item()
+                current_lap = (gates_passed - 1) // num_gates_per_lap
+
+                # Check if we just completed a lap (passed the last gate of a lap)
+                if gates_passed % num_gates_per_lap == 0 and gates_passed > 0:
+                    lap_index = (gates_passed // num_gates_per_lap) - 1  # 0-indexed lap number
+
+                    if lap_index < 3:  # Only track first 3 laps
+                        # Calculate lap time
+                        lap_time = current_time[ids_gate_passed == env_id].item() - self.env._lap_start_time[env_id].item()
+                        self.env._lap_times[env_id, lap_index] = lap_time
+
+                        # Update lap start time for next lap
+                        self.env._lap_start_time[env_id] = current_time[ids_gate_passed == env_id].item()
+                        self.env._current_lap[env_id] = lap_index + 1
+
+                        # Mark race as complete when 3 laps are done
+                        if lap_index + 1 >= self.cfg.max_n_laps:
+                            self.env._race_completed[env_id] = True
 
         # === 4. CRASH: One-time penalty on termination only ===
         # Track crashes for termination logic
@@ -236,6 +359,7 @@ class DefaultQuadcopterStrategy:
             self.env.extras["log"]["Step/reward_vel_align"] = r_vel_align.mean().item()
             self.env.extras["log"]["Step/total_gates_passed"] = self.env._n_gates_passed.sum().item()
             self.env.extras["log"]["Step/num_crashed"] = (self.env._crashed > 0).sum().item()
+            self.env.extras["log"]["Curriculum/speed_reward_coef"] = λ_vel  # Track speed curriculum
 
             # Episode-level gate statistics (shows multi-gate performance)
             self.env.extras["log"]["Episode/gates_per_env_mean"] = self.env._n_gates_passed.float().mean().item()
@@ -246,6 +370,41 @@ class DefaultQuadcopterStrategy:
             self.env.extras["log"]["Episode/pct_passing_3plus_gates"] = (
                 (self.env._n_gates_passed >= 3).float().mean().item() * 100
             )
+
+            # Lap timing statistics (only for envs that completed laps)
+            num_gates_per_lap = self.env._waypoints.shape[0]
+            laps_completed = (self.env._n_gates_passed // num_gates_per_lap).clamp(0, 3)  # [N] tensor of lap counts (0-3)
+
+            # Count envs that completed each lap
+            completed_1_lap = (laps_completed >= 1).sum().item()
+            completed_2_laps = (laps_completed >= 2).sum().item()
+            completed_3_laps = (laps_completed >= 3).sum().item()
+
+            # Domain randomization statistics
+            self.env.extras["log"]["DomainRand/avg_twr"] = self.env._thrust_to_weight.mean().item()
+            self.env.extras["log"]["DomainRand/avg_k_aero_xy"] = self.env._K_aero[:, 0].mean().item()
+            self.env.extras["log"]["DomainRand/avg_kp_omega_rp"] = self.env._kp_omega[:, 0].mean().item()
+
+            # Log lap time averages (only for envs that completed that lap)
+            if completed_1_lap > 0:
+                lap1_mask = laps_completed >= 1
+                avg_lap1 = self.env._lap_times[lap1_mask, 0].mean().item()
+                self.env.extras["log"]["Lap/avg_lap1_time"] = avg_lap1
+                self.env.extras["log"]["Lap/num_completed_lap1"] = completed_1_lap
+
+            if completed_2_laps > 0:
+                lap2_mask = laps_completed >= 2
+                avg_lap2 = self.env._lap_times[lap2_mask, 1].mean().item()
+                self.env.extras["log"]["Lap/avg_lap2_time"] = avg_lap2
+                self.env.extras["log"]["Lap/num_completed_lap2"] = completed_2_laps
+
+            if completed_3_laps > 0:
+                lap3_mask = laps_completed >= 3
+                avg_lap3 = self.env._lap_times[lap3_mask, 2].mean().item()
+                total_race_time = self.env._lap_times[lap3_mask].sum(dim=1).mean().item()
+                self.env.extras["log"]["Lap/avg_lap3_time"] = avg_lap3
+                self.env.extras["log"]["Lap/avg_total_race_time"] = total_race_time
+                self.env.extras["log"]["Lap/num_completed_race"] = completed_3_laps
 
             # Track best saved model reward for comparison
             # This gets updated by the trainer when a new best model is saved
@@ -393,6 +552,13 @@ class DefaultQuadcopterStrategy:
             extras["Episode_Termination/time_out"] = torch.count_nonzero(self.env.reset_time_outs[env_ids]).item()
             self.env.extras["log"].update(extras)
 
+        # Domain randomization: randomize physical parameters for sim2real
+        # Only enable after policy learns to complete laps consistently
+        if (self.cfg.is_train and
+            self.cfg.enable_domain_rand and
+            self.env.iteration >= self.cfg.domain_rand_start_iter):
+            self._randomize_domain_params(env_ids)
+
         # Call robot reset first
         self.env._robot.reset(env_ids)
 
@@ -512,6 +678,12 @@ class DefaultQuadcopterStrategy:
         self.env._prev_x_drone_wrt_gate = torch.ones(self.num_envs, device=self.device)
 
         self.env._crashed[env_ids] = 0
+
+        # Reset lap tracking variables
+        self.env._current_lap[env_ids] = 0
+        self.env._lap_start_time[env_ids] = 0.0
+        self.env._lap_times[env_ids] = 0.0
+        self.env._race_completed[env_ids] = False
 
         # Initialize previous position for progress tracking
         self.env._prev_pos_w[env_ids] = self.env._robot.data.root_link_pos_w[env_ids].clone()
