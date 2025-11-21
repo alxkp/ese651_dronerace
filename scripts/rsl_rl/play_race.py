@@ -126,26 +126,37 @@ def main():
     # load previously trained model
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)
+    print("[INFO]: Checkpoint loaded successfully!")
 
     # obtain the trained policy for inference
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
+    print("[INFO]: Policy ready for inference")
 
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+    print(f"[INFO]: Exporting policy to {export_model_dir}")
     export_policy_as_jit(
         ppo_runner.alg.actor_critic, ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.pt"
     )
     export_policy_as_onnx(
         ppo_runner.alg.actor_critic, normalizer=ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.onnx"
     )
+    print("[INFO]: Policy exported successfully")
 
     # reset environment
+    print("[INFO]: Resetting environment and starting simulation...")
     obs = env.get_observations()
+    # breakpoint()
     # Extract tensor from TensorDict for policy
-    if hasattr(obs, "get"):  # Check if it's a TensorDict
+    if isinstance(obs, tuple):
+        obs = obs[0]
+    elif hasattr(obs, "get"):  # Check if it's a TensorDict
         obs = obs["policy"]  # Extract the policy observation
+    else:
+        obs = obs
     timestep = 0
     # simulate environment
+    print("[INFO]: Starting simulation loop...")
     while simulation_app.is_running():
         # run everything in inference mode
         with torch.inference_mode():
@@ -154,16 +165,29 @@ def main():
             # env stepping
             obs, rewards, dones, infos = env.step(actions)
             # Extract tensor from TensorDict for policy
-            if hasattr(obs, "get"):  # Check if it's a TensorDict
+            if isinstance(obs, tuple):
+                obs = obs[0]
+            elif hasattr(obs, "get"):  # Check if it's a TensorDict
                 obs = obs["policy"]  # Extract the policy observation
+            else:
+                obs = obs
         if args_cli.video:
             timestep += 1
+            if timestep % 100 == 0:
+                print(f"[INFO]: Timestep {timestep}/{args_cli.video_length}")
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
+                print(f"[INFO]: Video recording complete ({timestep} steps)")
                 break
+        else:
+            timestep += 1
+            if timestep % 100 == 0:
+                print(f"[INFO]: Running timestep {timestep}...")
 
     # close the simulator
+    print("[INFO]: Closing environment...")
     env.close()
+    print("[INFO]: Done!")
 
 
 if __name__ == "__main__":
